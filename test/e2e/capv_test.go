@@ -24,8 +24,8 @@ import (
 	. "github.com/onsi/gomega" //nolint:golint
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
+	controlplane "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1alpha3"
 	"sigs.k8s.io/cluster-api/test/framework"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -46,19 +46,31 @@ var _ = Describe("CAPV", func() {
 
 			numControlPlaneMachines int32
 			numWorkerMachines       int32
+			kubeadmControlPlane     bool
 			input                   *framework.ControlplaneClusterInput
 		)
 
 		JustBeforeEach(func() {
-			clusterName = fmt.Sprintf("test-%s", Hash7())
 
-			cluster, infraCluster := clusterGen.Generate("default", clusterName)
-			controlPlaneNodes := make([]framework.Node, numControlPlaneMachines)
-			for i := range controlPlaneNodes {
-				controlPlaneNodes[i] = controlPlaneNodeGen.Generate(cluster.Namespace, cluster.Name)
+			clusterName = fmt.Sprintf("test-%s", Hash7())
+			clusterNamespace := "default"
+			input = &framework.ControlplaneClusterInput{
+				Management:    mgmt,
+				CreateTimeout: pollTimeout,
+				DeleteTimeout: pollTimeout,
 			}
-			machineDeployment := machineDeploymentGen.Generate(cluster.Namespace, cluster.Name, numWorkerMachines)
-			relatedResources := []runtime.Object{}
+
+			if kubeadmControlPlane {
+				input.ControlPlane, input.MachineTemplate = controlPlaneNodeGen.GenerateKubeadmControlPlane(clusterNamespace, clusterName, numControlPlaneMachines)
+			} else {
+				controlPlaneNodes := make([]framework.Node, numControlPlaneMachines)
+				for i := range controlPlaneNodes {
+					controlPlaneNodes[i] = controlPlaneNodeGen.Generate(clusterNamespace, clusterName)
+				}
+				input.Nodes = controlPlaneNodes
+			}
+			cluster, infraCluster := clusterGen.Generate(clusterNamespace, clusterName)
+			input.MachineDeployment = machineDeploymentGen.Generate(cluster.Namespace, cluster.Name, numWorkerMachines)
 
 			if loadBalancerGen != nil {
 				By("generating load balancer")
@@ -74,19 +86,18 @@ var _ = Describe("CAPV", func() {
 					Namespace:  loadBalancerObj.GetNamespace(),
 					Name:       loadBalancerObj.GetName(),
 				}
-				relatedResources = append(relatedResources, loadBalancer)
+				input.RelatedResources = append(input.RelatedResources, loadBalancer)
 			}
-
-			input = &framework.ControlplaneClusterInput{
-				Management:        mgmt,
-				Cluster:           cluster,
-				InfraCluster:      infraCluster,
-				Nodes:             controlPlaneNodes,
-				MachineDeployment: machineDeployment,
-				RelatedResources:  relatedResources,
-				CreateTimeout:     pollTimeout,
-				DeleteTimeout:     pollTimeout,
+			if kubeadmControlPlane {
+				cluster.Spec.ControlPlaneRef = &corev1.ObjectReference{
+					APIVersion: controlplane.GroupVersion.String(),
+					Kind:       framework.TypeToKind(input.ControlPlane),
+					Namespace:  input.ControlPlane.GetNamespace(),
+					Name:       input.ControlPlane.GetName(),
+				}
 			}
+			input.Cluster = cluster
+			input.InfraCluster = infraCluster
 		})
 
 		AfterEach(func() {
@@ -133,6 +144,7 @@ var _ = Describe("CAPV", func() {
 
 			destroyVMsWithPrefix(clusterName)
 			loadBalancerGen = nil
+			kubeadmControlPlane = false
 			numControlPlaneMachines = 0
 			numWorkerMachines = 0
 		})
@@ -147,13 +159,14 @@ var _ = Describe("CAPV", func() {
 			})
 		})
 
-		Context("Two-node control plane with one worker node", func() {
+		Context("one-node kubeadm control plane with one worker node", func() {
 			BeforeEach(func() {
 				loadBalancerGen = HAProxyLoadBalancerGenerator{}
-				numControlPlaneMachines = 2
+				kubeadmControlPlane = true
+				numControlPlaneMachines = 1
 				numWorkerMachines = 1
 			})
-			It("should create a two-node control plane with one worker node", func() {
+			It("should create a one-node kubeadm control plane with one worker node", func() {
 				frameworkx.ControlPlaneCluster(input)
 			})
 		})

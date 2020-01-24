@@ -58,6 +58,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).ShouldNot(HaveOccurred())
 	Expect(config).ShouldNot(BeNil())
 
+	// defaulting the e2e config
+	config.Defaults()
+
 	By("cleaning up previous kind cluster")
 	kindx.TeardownIfExists(ctx, config.ManagementClusterName)
 

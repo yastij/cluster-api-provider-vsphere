@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	bootstrapv1 "sigs.k8s.io/cluster-api/bootstrap/kubeadm/api/v1alpha3"
+	controlplane "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1alpha3"
+
 	"sigs.k8s.io/cluster-api/bootstrap/kubeadm/types/v1beta1"
 	"sigs.k8s.io/cluster-api/test/framework"
 
@@ -247,6 +249,109 @@ func (n ControlPlaneNodeGenerator) Generate(clusterNamespace, clusterName string
 		InfraMachine:    infraMachine,
 		BootstrapConfig: bootstrapConfig,
 	}
+}
+
+// GenerateKubeadmControlPlane returns the resources required to create a kubeadm controlplane.
+func (n ControlPlaneNodeGenerator) GenerateKubeadmControlPlane(clusterNamespace, clusterName string, replicas int32) (*controlplane.KubeadmControlPlane, *infrav1.VSphereMachineTemplate) {
+	generatedName := fmt.Sprintf("%s-%s", clusterName, Hash7())
+
+	infraMachineTemplate := &infrav1.VSphereMachineTemplate{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: clusterNamespace,
+			Name:      generatedName,
+		},
+		Spec: infrav1.VSphereMachineTemplateSpec{
+			Template: infrav1.VSphereMachineTemplateResource{
+				Spec: infrav1.VSphereMachineSpec{
+					VirtualMachineCloneSpec: infrav1.VirtualMachineCloneSpec{
+						Datacenter: vsphereDatacenter,
+						DiskGiB:    50,
+						MemoryMiB:  2048,
+						Network: infrav1.NetworkSpec{
+							Devices: []infrav1.NetworkDeviceSpec{
+								{
+									NetworkName: vsphereNetwork,
+									DHCP4:       true,
+								},
+							},
+						},
+						NumCPUs:  2,
+						Template: vsphereMachineTemplate,
+					},
+				},
+			},
+		},
+	}
+
+	kubeadmControlPlane := &controlplane.KubeadmControlPlane{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: clusterNamespace,
+			Name:      fmt.Sprintf("%s-kcp", clusterName),
+		},
+		Spec: controlplane.KubeadmControlPlaneSpec{
+			Replicas: &replicas,
+			Version:  config.KubernetesVersion,
+			InfrastructureTemplate: corev1.ObjectReference{
+				APIVersion: infrav1.GroupVersion.String(),
+				Kind:       framework.TypeToKind(infraMachineTemplate),
+				Namespace:  infraMachineTemplate.GetNamespace(),
+				Name:       infraMachineTemplate.GetName(),
+			},
+			KubeadmConfigSpec: bootstrapv1.KubeadmConfigSpec{
+				ClusterConfiguration: &v1beta1.ClusterConfiguration{
+					APIServer: v1beta1.APIServer{
+						ControlPlaneComponent: v1beta1.ControlPlaneComponent{
+							ExtraArgs: map[string]string{
+								"cloud-provider": "external",
+							},
+						},
+					},
+					ControllerManager: v1beta1.ControlPlaneComponent{
+						ExtraArgs: map[string]string{
+							"cloud-provider": "external",
+						},
+					},
+					ImageRepository: "k8s.gcr.io",
+				},
+				InitConfiguration: &v1beta1.InitConfiguration{
+					NodeRegistration: v1beta1.NodeRegistrationOptions{
+						CRISocket: "/var/run/containerd/containerd.sock",
+						KubeletExtraArgs: map[string]string{
+							"cloud-provider": "external",
+						},
+						Name: "{{ ds.meta_data.hostname }}",
+					},
+				},
+				JoinConfiguration: &v1beta1.JoinConfiguration{
+					NodeRegistration: v1beta1.NodeRegistrationOptions{
+						CRISocket: "/var/run/containerd/containerd.sock",
+						KubeletExtraArgs: map[string]string{
+							"cloud-provider": "external",
+						},
+						Name: "{{ ds.meta_data.hostname }}",
+					},
+				},
+				PreKubeadmCommands: []string{
+					`hostname "{{ ds.meta_data.hostname }}"`,
+					`echo "::1        ipv6-localhost ipv6-loopback" >/etc/hosts`,
+					`echo "127.0.0.1  localhost" >>/etc/hosts`,
+					`echo "127.0.0.1  {{ ds.meta_data.hostname }}" >>/etc/hosts`,
+					`echo "{{ ds.meta_data.hostname }}" >/etc/hostname`,
+				},
+				Users: []bootstrapv1.User{
+					{
+						Name:              "capv",
+						SSHAuthorizedKeys: []string{sshAuthKey},
+						Sudo:              &sudoAll,
+						Passwd:            &passwd,
+						LockPassword:      &lockPasswd,
+					},
+				},
+			},
+		},
+	}
+
+	return kubeadmControlPlane, infraMachineTemplate
 }
 
 // MachineDeploymentGenerator may be used to generate the resources

@@ -45,7 +45,16 @@ func ControlPlaneCluster(input *ControlplaneClusterInput) {
 	Expect(input).ToNot(BeNil())
 	input.SetDefaults()
 	Expect(input.Management).ToNot(BeNil())
-	Expect(len(input.Nodes)).To(BeNumerically(">=", 1), "one or more control plane nodes is required")
+	// expectedNumberOfNodes is the number of nodes that should be deployed to
+	// the cluster. This is the number of control plane
+	// nodes (either through input.Nodes or kubeadmControlPlane) and the number of
+	// replicas defined for a possible MachineDeployment.
+	expectedNumberOfNodes := len(input.Nodes)
+
+	if input.ControlPlane != nil {
+		expectedNumberOfNodes = int(*input.ControlPlane.Spec.Replicas)
+	}
+	Expect(expectedNumberOfNodes).To(BeNumerically(">=", 1), "one or more control plane nodes is required")
 
 	mgmtClient, err := input.Management.GetClient()
 	Expect(err).ToNot(HaveOccurred())
@@ -70,44 +79,37 @@ func ControlPlaneCluster(input *ControlplaneClusterInput) {
 			return mgmtClient.Create(ctx, obj)
 		}, input.CreateTimeout, eventuallyInterval).Should(Succeed())
 	}
+	if input.ControlPlane != nil {
+		By(fmt.Sprintf("creating Machine Template: VsphereMachineTemplate"))
+		Expect(mgmtClient.Create(ctx, input.MachineTemplate)).To(Succeed())
 
-	// expectedNumberOfNodes is the number of nodes that should be deployed to
-	// the cluster. This is the number of control plane nodes and the number of
-	// replicas defined for a possible MachineDeployment.
-	expectedNumberOfNodes := len(input.Nodes)
+		By(fmt.Sprintf("creating control plane resource: KubeadmControlPlane"))
+		Expect(mgmtClient.Create(ctx, input.ControlPlane)).To(Succeed())
 
-	// Create the control plane machines.
-	for i, node := range input.Nodes {
-		By(fmt.Sprintf("creating control plane resource %d: InfrastructureMachine", i+1))
-		Expect(mgmtClient.Create(ctx, node.InfraMachine)).To(Succeed())
+		waitForControlPlaneInitialized(ctx, input, mgmtClient)
+	} else {
+		// Create the control plane machines.
+		for i, node := range input.Nodes {
+			By(fmt.Sprintf("creating control plane resource %d: InfrastructureMachine", i+1))
+			Expect(mgmtClient.Create(ctx, node.InfraMachine)).To(Succeed())
 
-		By(fmt.Sprintf("creating control plane resource %d: BootstrapConfig", i+1))
-		Expect(mgmtClient.Create(ctx, node.BootstrapConfig)).To(Succeed())
+			By(fmt.Sprintf("creating control plane resource %d: BootstrapConfig", i+1))
+			Expect(mgmtClient.Create(ctx, node.BootstrapConfig)).To(Succeed())
 
-		By(fmt.Sprintf("creating control plane resource %d: Machine", i+1))
-		Expect(mgmtClient.Create(ctx, node.Machine)).To(Succeed())
+			By(fmt.Sprintf("creating control plane resource %d: Machine", i+1))
+			Expect(mgmtClient.Create(ctx, node.Machine)).To(Succeed())
 
-		// If this is the first node then block until the control plane is
-		// initialized.
-		//
-		// While it's possible to store cluster.Status.ControlPlaneInitialized
-		// and check that instead of the index (i == 0), the current design is
-		// intentional. We are asserting that the *first* node in the list
-		// *must* initialize the control plane. If it does not, then we *must*
-		// fail.
-		if i == 0 {
-			By("waiting for the control plane to be initialized")
-			clusterKey := client.ObjectKey{
-				Namespace: input.Cluster.GetNamespace(),
-				Name:      input.Cluster.GetName(),
+			// If this is the first node then block until the control plane is
+			// initialized.
+			//
+			// While it's possible to store cluster.Status.ControlPlaneInitialized
+			// and check that instead of the index (i == 0), the current design is
+			// intentional. We are asserting that the *first* node in the list
+			// *must* initialize the control plane. If it does not, then we *must*
+			// fail.
+			if i == 0 {
+				waitForControlPlaneInitialized(ctx, input, mgmtClient)
 			}
-			Eventually(func() (bool, error) {
-				cluster := &clusterv1.Cluster{}
-				if err := mgmtClient.Get(ctx, clusterKey, cluster); err != nil {
-					return false, err
-				}
-				return cluster.Status.ControlPlaneInitialized, nil
-			}, input.CreateTimeout, eventuallyInterval).Should(BeTrue())
 		}
 	}
 
@@ -139,4 +141,19 @@ func ControlPlaneCluster(input *ControlplaneClusterInput) {
 		}
 		return nodeList.Items, nil
 	}, input.CreateTimeout, eventuallyInterval).Should(HaveLen(expectedNumberOfNodes))
+}
+
+func waitForControlPlaneInitialized(ctx context.Context, input *ControlplaneClusterInput, mgmtClient client.Client) {
+	By("waiting for the control plane to be initialized")
+	clusterKey := client.ObjectKey{
+		Namespace: input.Cluster.GetNamespace(),
+		Name:      input.Cluster.GetName(),
+	}
+	Eventually(func() (bool, error) {
+		cluster := &clusterv1.Cluster{}
+		if err := mgmtClient.Get(ctx, clusterKey, cluster); err != nil {
+			return false, err
+		}
+		return cluster.Status.ControlPlaneInitialized, nil
+	}, input.CreateTimeout, eventuallyInterval).Should(BeTrue())
 }
