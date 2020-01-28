@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega" //nolint:golint
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	controlplane "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1alpha3"
 	"sigs.k8s.io/cluster-api/test/framework"
@@ -36,19 +37,26 @@ import (
 var _ = Describe("CAPV", func() {
 	Describe("Cluster Creation", func() {
 		var (
-			clusterName          string
-			clusterGen           ClusterGenerator
-			loadBalancerGen      LoadBalancerGenerator
-			machineDeploymentGen MachineDeploymentGenerator
-			controlPlaneNodeGen  ControlPlaneNodeGenerator
-			pollTimeout          = 10 * time.Minute
-			pollInterval         = 10 * time.Second
+			clusterName            string
+			clusterGen             ClusterGenerator
+			loadBalancerGen        LoadBalancerGenerator
+			machineDeploymentGen   MachineDeploymentGenerator
+			controlPlaneNodeGen    ControlPlaneNodeGenerator
+			kubeadmControlPlaneGen *KubeadmControlPlaneGenerator
+			pollTimeout            = 10 * time.Minute
+			pollInterval           = 10 * time.Second
 
 			numControlPlaneMachines int32
 			numWorkerMachines       int32
-			kubeadmControlPlane     bool
 			input                   *framework.ControlplaneClusterInput
 		)
+
+		BeforeEach(func() {
+			// The default number of control plane and worker nodes for each
+			// test is one. Tests may override these values.
+			numControlPlaneMachines = 1
+			numWorkerMachines = 1
+		})
 
 		JustBeforeEach(func() {
 
@@ -60,17 +68,9 @@ var _ = Describe("CAPV", func() {
 				DeleteTimeout: pollTimeout,
 			}
 
-			if kubeadmControlPlane {
-				input.ControlPlane, input.MachineTemplate = controlPlaneNodeGen.GenerateKubeadmControlPlane(clusterNamespace, clusterName, numControlPlaneMachines)
-			} else {
-				controlPlaneNodes := make([]framework.Node, numControlPlaneMachines)
-				for i := range controlPlaneNodes {
-					controlPlaneNodes[i] = controlPlaneNodeGen.Generate(clusterNamespace, clusterName)
-				}
-				input.Nodes = controlPlaneNodes
-			}
 			cluster, infraCluster := clusterGen.Generate(clusterNamespace, clusterName)
-			input.MachineDeployment = machineDeploymentGen.Generate(cluster.Namespace, cluster.Name, numWorkerMachines)
+			By(logGenerated(cluster))
+			By(logGenerated(infraCluster))
 
 			if loadBalancerGen != nil {
 				By("generating load balancer")
@@ -79,7 +79,7 @@ var _ = Describe("CAPV", func() {
 				Expect(ok).To(BeTrue())
 				Expect(loadBalancerObj).ToNot(BeNil())
 				loadBalancerGVK := loadBalancer.GetObjectKind().GroupVersionKind()
-				By(fmt.Sprintf("generated %s", loadBalancerGVK))
+				By(logGenerated(loadBalancer))
 				infraCluster.Spec.LoadBalancerRef = &corev1.ObjectReference{
 					APIVersion: loadBalancerGVK.GroupVersion().String(),
 					Kind:       loadBalancerGVK.Kind,
@@ -88,14 +88,36 @@ var _ = Describe("CAPV", func() {
 				}
 				input.RelatedResources = append(input.RelatedResources, loadBalancer)
 			}
-			if kubeadmControlPlane {
+
+			if kubeadmControlPlaneGen != nil {
+				input.ControlPlane, input.MachineTemplate = kubeadmControlPlaneGen.Generate(clusterNamespace, clusterName, numControlPlaneMachines)
 				cluster.Spec.ControlPlaneRef = &corev1.ObjectReference{
 					APIVersion: controlplane.GroupVersion.String(),
 					Kind:       framework.TypeToKind(input.ControlPlane),
 					Namespace:  input.ControlPlane.GetNamespace(),
 					Name:       input.ControlPlane.GetName(),
 				}
+				By(logGenerated(input.ControlPlane))
+				By(logGenerated(input.MachineTemplate))
+			} else {
+				By("generating control plane resources")
+				input.Nodes = make([]framework.Node, numControlPlaneMachines)
+				for i := range input.Nodes {
+					input.Nodes[i] = controlPlaneNodeGen.Generate(clusterNamespace, clusterName)
+					By(logGenerated(input.Nodes[i].Machine))
+					By(logGenerated(input.Nodes[i].InfraMachine))
+					By(logGenerated(input.Nodes[i].BootstrapConfig))
+				}
 			}
+
+			if numWorkerMachines > 0 {
+				By("generating machine deployment resources")
+				input.MachineDeployment = machineDeploymentGen.Generate(cluster.Namespace, cluster.Name, numWorkerMachines)
+				By(logGenerated(input.MachineDeployment.MachineDeployment))
+				By(logGenerated(input.MachineDeployment.InfraMachineTemplate))
+				By(logGenerated(input.MachineDeployment.BootstrapConfigTemplate))
+			}
+
 			input.Cluster = cluster
 			input.InfraCluster = infraCluster
 		})
@@ -144,31 +166,37 @@ var _ = Describe("CAPV", func() {
 
 			destroyVMsWithPrefix(clusterName)
 			loadBalancerGen = nil
-			kubeadmControlPlane = false
-			numControlPlaneMachines = 0
-			numWorkerMachines = 0
+			kubeadmControlPlaneGen = nil
 		})
 
 		Context("Single-node control plane with one worker node", func() {
-			BeforeEach(func() {
-				numControlPlaneMachines = 1
-				numWorkerMachines = 1
-			})
 			It("should create a single-node control plane with one worker node", func() {
 				frameworkx.ControlPlaneCluster(input)
 			})
 		})
 
-		Context("one-node kubeadm control plane with one worker node", func() {
+		Context("Single-node kubeadm control plane with one worker node", func() {
 			BeforeEach(func() {
 				loadBalancerGen = HAProxyLoadBalancerGenerator{}
-				kubeadmControlPlane = true
-				numControlPlaneMachines = 1
-				numWorkerMachines = 1
+				kubeadmControlPlaneGen = &KubeadmControlPlaneGenerator{}
 			})
-			It("should create a one-node kubeadm control plane with one worker node", func() {
+			It("should create a single-node kubeadm control plane with one worker node", func() {
 				frameworkx.ControlPlaneCluster(input)
 			})
 		})
 	})
 })
+
+func logGenerated(obj runtime.Object) string {
+	return logGeneratedWithIndex(obj, -1)
+}
+
+func logGeneratedWithIndex(obj runtime.Object, index int) string {
+	Expect(obj).ToNot(BeNil())
+	metaObj, ok := obj.(metav1.Object)
+	Expect(ok).To(BeTrue(), "obj must implement metav1.Object")
+	if index >= 0 {
+		return fmt.Sprintf("generated [%d] %s %s/%s", index, obj.GetObjectKind().GroupVersionKind(), metaObj.GetNamespace(), metaObj.GetName())
+	}
+	return fmt.Sprintf("generated %s %s/%s", obj.GetObjectKind().GroupVersionKind(), metaObj.GetNamespace(), metaObj.GetName())
+}

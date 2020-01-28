@@ -58,7 +58,7 @@ var _ = BeforeSuite(func() {
 	Expect(err).ShouldNot(HaveOccurred())
 	Expect(config).ShouldNot(BeNil())
 
-	// defaulting the e2e config
+	By("applying e2e config defaults")
 	config.Defaults()
 
 	By("cleaning up previous kind cluster")

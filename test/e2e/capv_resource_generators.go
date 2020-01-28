@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	bootstrapv1 "sigs.k8s.io/cluster-api/bootstrap/kubeadm/api/v1alpha3"
-	controlplane "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1alpha3"
+	controlplanev1 "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1alpha3"
 
 	"sigs.k8s.io/cluster-api/bootstrap/kubeadm/types/v1beta1"
 	"sigs.k8s.io/cluster-api/test/framework"
@@ -51,6 +51,10 @@ type ClusterGenerator struct{}
 func (c ClusterGenerator) Generate(clusterNamespace, clusterName string) (*clusterv1.Cluster, *infrav1.VSphereCluster) {
 
 	infraCluster := &infrav1.VSphereCluster{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&infrav1.VSphereCluster{}),
+			APIVersion: infrav1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      clusterName,
@@ -97,6 +101,10 @@ func (c ClusterGenerator) Generate(clusterNamespace, clusterName string) (*clust
 	}
 
 	cluster := &clusterv1.Cluster{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&clusterv1.Cluster{}),
+			APIVersion: clusterv1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      clusterName,
@@ -131,6 +139,10 @@ func (n ControlPlaneNodeGenerator) Generate(clusterNamespace, clusterName string
 	generatedName := fmt.Sprintf("%s-%s", clusterName, Hash7())
 
 	infraMachine := &infrav1.VSphereMachine{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&infrav1.VSphereMachine{}),
+			APIVersion: infrav1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      generatedName,
@@ -159,6 +171,10 @@ func (n ControlPlaneNodeGenerator) Generate(clusterNamespace, clusterName string
 	}
 
 	bootstrapConfig := &bootstrapv1.KubeadmConfig{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&bootstrapv1.KubeadmConfig{}),
+			APIVersion: bootstrapv1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      generatedName,
@@ -177,7 +193,6 @@ func (n ControlPlaneNodeGenerator) Generate(clusterNamespace, clusterName string
 						"cloud-provider": "external",
 					},
 				},
-				ImageRepository: "k8s.gcr.io",
 			},
 			InitConfiguration: &v1beta1.InitConfiguration{
 				NodeRegistration: v1beta1.NodeRegistrationOptions{
@@ -217,6 +232,10 @@ func (n ControlPlaneNodeGenerator) Generate(clusterNamespace, clusterName string
 	}
 
 	machine := &clusterv1.Machine{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&clusterv1.Machine{}),
+			APIVersion: clusterv1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      generatedName,
@@ -251,11 +270,19 @@ func (n ControlPlaneNodeGenerator) Generate(clusterNamespace, clusterName string
 	}
 }
 
-// GenerateKubeadmControlPlane returns the resources required to create a kubeadm controlplane.
-func (n ControlPlaneNodeGenerator) GenerateKubeadmControlPlane(clusterNamespace, clusterName string, replicas int32) (*controlplane.KubeadmControlPlane, *infrav1.VSphereMachineTemplate) {
+// KubeadmControlPlaneGenerator may be used to generate the resources for a
+// kubeadm-based control plane.
+type KubeadmControlPlaneGenerator struct{}
+
+// Generate returns the resources required to create a kubeadm control plane.
+func (g KubeadmControlPlaneGenerator) Generate(clusterNamespace, clusterName string, replicas int32) (*controlplanev1.KubeadmControlPlane, *infrav1.VSphereMachineTemplate) {
 	generatedName := fmt.Sprintf("%s-%s", clusterName, Hash7())
 
 	infraMachineTemplate := &infrav1.VSphereMachineTemplate{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&infrav1.VSphereMachineTemplate{}),
+			APIVersion: infrav1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      generatedName,
@@ -283,12 +310,16 @@ func (n ControlPlaneNodeGenerator) GenerateKubeadmControlPlane(clusterNamespace,
 		},
 	}
 
-	kubeadmControlPlane := &controlplane.KubeadmControlPlane{
+	kubeadmControlPlane := &controlplanev1.KubeadmControlPlane{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&controlplanev1.KubeadmControlPlane{}),
+			APIVersion: controlplanev1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      fmt.Sprintf("%s-kcp", clusterName),
 		},
-		Spec: controlplane.KubeadmControlPlaneSpec{
+		Spec: controlplanev1.KubeadmControlPlaneSpec{
 			Replicas: &replicas,
 			Version:  config.KubernetesVersion,
 			InfrastructureTemplate: corev1.ObjectReference{
@@ -311,7 +342,6 @@ func (n ControlPlaneNodeGenerator) GenerateKubeadmControlPlane(clusterNamespace,
 							"cloud-provider": "external",
 						},
 					},
-					ImageRepository: "k8s.gcr.io",
 				},
 				InitConfiguration: &v1beta1.InitConfiguration{
 					NodeRegistration: v1beta1.NodeRegistrationOptions{
@@ -366,6 +396,10 @@ func (n MachineDeploymentGenerator) Generate(clusterNamespace, clusterName strin
 	generatedName := clusterName
 
 	infraMachineTemplate := &infrav1.VSphereMachineTemplate{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&infrav1.VSphereMachineTemplate{}),
+			APIVersion: infrav1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      generatedName,
@@ -394,6 +428,10 @@ func (n MachineDeploymentGenerator) Generate(clusterNamespace, clusterName strin
 	}
 
 	bootstrapConfigTemplate := &bootstrapv1.KubeadmConfigTemplate{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&bootstrapv1.KubeadmConfigTemplate{}),
+			APIVersion: bootstrapv1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      generatedName,
@@ -432,6 +470,10 @@ func (n MachineDeploymentGenerator) Generate(clusterNamespace, clusterName strin
 	}
 
 	machineDeployment := &clusterv1.MachineDeployment{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       framework.TypeToKind(&clusterv1.MachineDeployment{}),
+			APIVersion: clusterv1.GroupVersion.String(),
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: clusterNamespace,
 			Name:      generatedName,
