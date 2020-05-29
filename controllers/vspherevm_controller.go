@@ -176,6 +176,10 @@ func (r vmReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, reterr error) 
 	// Always issue a patch when exiting this function so changes to the
 	// resource are patched back to the API server.
 	defer func() {
+		// preserve the remote biosUUID, as it must not change
+		// otherwise we consider the VM as failed
+		r.preserveBiosUUID(vmContext)
+		vmContext.Logger.Info("local vspherevm", "vspherevm", vmContext.VSphereVM)
 		// Patch the VSphereVM resource.
 		if err := vmContext.Patch(); err != nil {
 			if reterr == nil {
@@ -222,7 +226,7 @@ func (r vmReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, reterr error) 
 				vmContext.Logger.Error(err, "failed to get VSphereVM while exiting reconcile")
 				return false, nil
 			}
-
+			vmContext.Logger.Info("remote vspherevm patched", "vspherevm", remoteObj)
 			// If the remote resource version is not the same as the local
 			// resource version, then it means we were able to get a resource
 			// newer than the one we already had.
@@ -324,7 +328,19 @@ func (r vmReconciler) reconcileNormal(ctx *context.VMContext) (reconcile.Result,
 	}
 
 	// Update the VSphereVM's BIOS UUID.
-	ctx.VSphereVM.Spec.BiosUUID = vm.BiosUUID
+	ctx.Logger.Info("vm bios-uuid", "biosuuid", vm.BiosUUID)
+
+	// defensive check to ensure we are not removing the biosUUID
+	if vm.BiosUUID != "" {
+		ctx.VSphereVM.Spec.BiosUUID = vm.BiosUUID
+	}
+
+	// patch the vsphereVM early to ensure that the task is
+	// reflected in the status right away, this avoid situations
+	// of concurrent clones
+	if err := ctx.Patch(); err != nil {
+		ctx.Logger.Error(err, "patch failed", "vspherevm", ctx.VSphereVM)
+	}
 
 	// Update the VSphereVM's network status.
 	r.reconcileNetwork(ctx, vm)
@@ -336,7 +352,7 @@ func (r vmReconciler) reconcileNormal(ctx *context.VMContext) (reconcile.Result,
 	return reconcile.Result{}, nil
 }
 
-func (r vmReconciler) reconcileNetwork(ctx *context.VMContext, vm infrav1.VirtualMachine) {
+func (r *vmReconciler) reconcileNetwork(ctx *context.VMContext, vm infrav1.VirtualMachine) {
 	ctx.VSphereVM.Status.Network = vm.Network
 	ipAddrs := make([]string, 0, len(vm.Network))
 	for _, netStatus := range ctx.VSphereVM.Status.Network {
@@ -366,4 +382,20 @@ func (r *vmReconciler) clusterToVSphereVMs(a handler.MapObject) []reconcile.Requ
 		requests = append(requests, r)
 	}
 	return requests
+}
+
+func (r *vmReconciler) preserveBiosUUID(ctx *context.VMContext) error {
+	remoteVsphereVM := &infrav1.VSphereVM{}
+	namespacedName := apitypes.NamespacedName{
+		Name:      ctx.VSphereVM.Name,
+		Namespace: ctx.VSphereVM.Namespace,
+	}
+	if err := r.Client.Get(r, namespacedName, remoteVsphereVM); err != nil {
+		r.Logger.Info("VSphereVM not found, won't reconcile", "key", namespacedName)
+		return err
+	}
+	if ctx.VSphereVM.Spec.BiosUUID == "" {
+		ctx.VSphereVM.Spec.BiosUUID = remoteVsphereVM.Spec.BiosUUID
+	}
+	return nil
 }
